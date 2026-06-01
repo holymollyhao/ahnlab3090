@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU Cluster Dashboard</title>
+<style>
+  :root{
+    --bg:#0b0f1a; --panel:#141a2b; --panel2:#1b2336; --line:#26304a;
+    --txt:#e6ecff; --muted:#8a96b4; --accent:#5b8cff;
+    --green:#37d399; --amber:#ffc24b; --red:#ff6b6b; --violet:#a98bff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 80% -10%,#16203a 0%,var(--bg) 55%);
+    color:var(--txt);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;min-height:100vh}
+  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    padding:18px 24px;border-bottom:1px solid var(--line);
+    background:rgba(11,15,26,.7);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5}
+  .logo{font-size:20px;font-weight:700;letter-spacing:.3px;display:flex;align-items:center;gap:10px}
+  .logo .dot{width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green)}
+  .spacer{flex:1}
+  .meta{color:var(--muted);font-size:12px;text-align:right}
+  .btn{cursor:pointer;border:1px solid var(--line);background:var(--panel2);color:var(--txt);
+    padding:7px 13px;border-radius:9px;font-size:12px}
+  .btn:hover{border-color:var(--accent)}
+  .chips{display:flex;gap:12px;flex-wrap:wrap;padding:18px 24px 4px}
+  .chip{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
+    border-radius:14px;padding:13px 17px;min-width:130px;flex:1}
+  .chip .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+  .chip .v{font-size:23px;font-weight:700;margin-top:3px}
+  .chip .v small{font-size:13px;color:var(--muted);font-weight:500}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:16px;padding:18px 24px 40px}
+  .card{background:var(--panel);
+    border:1px solid var(--line);border-radius:16px;overflow:hidden;display:flex;flex-direction:column}
+  .card.offline{opacity:.55}
+  .card h2{margin:0;padding:13px 16px;font-size:15px;display:flex;align-items:center;gap:9px;
+    border-bottom:1px solid var(--line);background:var(--panel2)}
+  .card h2 .sdot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 9px var(--green)}
+  .card h2 .sdot.off{background:var(--red);box-shadow:0 0 9px var(--red)}
+  .card h2 .host{color:var(--muted);font-weight:500;font-size:12px}
+  .card h2 .cnt{margin-left:auto;color:var(--muted);font-size:12px;font-weight:500}
+  .gpu{padding:11px 16px;border-bottom:1px solid var(--line)}
+  .gpu:last-child{border-bottom:none}
+  .gpu .top{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .gpu .idx{font-weight:700;color:var(--accent);font-size:12px;min-width:18px}
+  .gpu .name{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gpu .pill{margin-left:auto;display:flex;gap:6px;align-items:center;flex-shrink:0}
+  .pill span{font-size:11px;color:var(--muted)}
+  .pill b{font-size:11px;padding:2px 7px;border-radius:999px;background:var(--panel2);border:1px solid var(--line)}
+  .bars{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .bar .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:3px}
+  .bar .lbl b{color:var(--txt)}
+  .track{height:8px;border-radius:6px;background:#0c1322;overflow:hidden;border:1px solid var(--line)}
+  .fill{height:100%;border-radius:6px;transition:width .5s ease}
+  .procs{margin-top:8px;display:flex;flex-wrap:wrap;gap:5px}
+  .proc{font-size:11px;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:2px 8px;color:var(--violet)}
+  .proc .mem{color:var(--muted)}
+  .empty{color:var(--muted);font-size:11px;font-style:italic;margin-top:6px}
+  .err{padding:22px 16px;color:var(--muted);font-size:13px;text-align:center}
+  .banner{display:none;margin:14px 24px 0;padding:11px 15px;border-radius:11px;
+    background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);color:#ffd0d0;font-size:13px}
+  footer{color:var(--muted);font-size:11px;text-align:center;padding:0 0 30px}
+  @media(max-width:520px){.bars{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span class="dot"></span>GPU Cluster</div>
+  <div class="spacer"></div>
+  <div class="meta" id="meta">connecting…</div>
+  <button class="btn" onclick="load()">↻ Refresh</button>
+</header>
+<div class="banner" id="banner"></div>
+<div class="chips" id="chips"></div>
+<div class="grid" id="grid"></div>
+<footer id="footer"></footer>
+<script>
+const REFRESH_MS = 5000;
+let API = null;           // discovered from endpoint.json
+let failCount = 0;
+
+function uColor(p){ if(p>=85)return'var(--red)'; if(p>=50)return'var(--amber)'; if(p>=10)return'var(--green)'; return'#3a4a6a'; }
+function col(p){ return uColor(p); }
+function tColor(t){ if(t>=80)return'var(--red)'; if(t>=65)return'var(--amber)'; return'var(--green)'; }
+function bar(label, val, max, txt, color){
+  const pct = max? Math.min(100, val/max*100) : 0;
+  return `<div class="bar"><div class="lbl"><span>${label}</span><b>${txt}</b></div>
+    <div class="track"><div class="fill" style="width:${pct}%;background:${color}"></div></div></div>`;
+}
+function gpuRow(g){
+  const util = g["utilization.gpu"]||0;
+  const mu = g["memory.used"]||0, mt = g["memory.total"]||1;
+  const temp = g["temperature.gpu"]; const pw = g["power.draw"]; const pl = g["enforced.power.limit"];
+  const procs = (g.processes||[]).map(p=>`<span class="proc">${p.username||'?'} <span class="mem">${(p.gpu_memory_usage/1024).toFixed(1)}G</span></span>`).join('');
+  return `<div class="gpu">
+    <div class="top">
+      <span class="idx">${g.index}</span>
+      <span class="name">${(g.name||'GPU').replace('NVIDIA ','')}</span>
+      <span class="pill">
+        ${temp!=null?`<b style="color:${tColor(temp)}">${temp}°C</b>`:''}
+        ${pw!=null?`<span>${pw}${pl?'/'+pl:''}W</span>`:''}
+      </span>
+    </div>
+    <div class="bars">
+      ${bar('Utilization', util, 100, util+'%', uColor(util))}
+      ${bar('Memory', mu, mt, (mu/1024).toFixed(1)+' / '+(mt/1024).toFixed(0)+' GB', col(mu/mt*100))}
+    </div>
+    ${procs?`<div class="procs">${procs}</div>`:'<div class="empty">idle — no processes</div>'}
+  </div>`;
+}
+function card(s){
+  if(!s.online){
+    return `<div class="card offline"><h2><span class="sdot off"></span>${s.name}
+      <span class="host">offline</span><span class="cnt">${s.error||'unreachable'}</span></h2>
+      <div class="err">No response from ${s.url}</div></div>`;
+  }
+  const gpus = s.gpus||[];
+  return `<div class="card"><h2><span class="sdot"></span>${s.name}
+    <span class="host">${s.hostname||''}</span><span class="cnt">${gpus.length} GPU${gpus.length!=1?'s':''}</span></h2>
+    ${gpus.map(gpuRow).join('')||'<div class="err">No GPUs reported</div>'}</div>`;
+}
+function chip(k,v){return `<div class="chip"><div class="k">${k}</div><div class="v">${v}</div></div>`;}
+function showBanner(msg){ const b=document.getElementById('banner'); b.style.display='block'; b.textContent=msg; }
+function hideBanner(){ document.getElementById('banner').style.display='none'; }
+
+async function resolveApi(){
+  // endpoint.json (committed by the server) tells us where the live tunnel currently is
+  const r = await fetch('./endpoint.json?ts='+Date.now(),{cache:'no-store'});
+  const d = await r.json();
+  API = (d.api||'').replace(/\/+$/,'');
+  return API;
+}
+async function load(){
+  try{
+    if(!API) await resolveApi();
+    const r = await fetch(API+'/api/stats',{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const d = await r.json();
+    failCount = 0; hideBanner();
+    const u = d.summary;
+    document.getElementById('chips').innerHTML =
+      chip('Servers', `${u.servers_online}<small>/${u.servers_total} online</small>`)+
+      chip('GPUs in use', `${u.used_gpus}<small>/${u.total_gpus}</small>`)+
+      chip('Avg utilization', `${u.avg_util}<small>%</small>`)+
+      chip('VRAM allocated', `${u.mem_used_gb}<small>/${u.mem_total_gb} GB</small>`)+
+      chip('Power draw', `${u.power_kw}<small> kW</small>`)+
+      chip('Active users', `${u.active_users.length}`);
+    const servers = d.servers.slice().sort((a,b)=> (b.online-a.online) || a.name.localeCompare(b.name));
+    document.getElementById('grid').innerHTML = servers.map(card).join('');
+    const t = new Date(d.generated).toLocaleTimeString();
+    document.getElementById('meta').textContent = 'updated '+t+' · auto-refresh '+(REFRESH_MS/1000)+'s';
+    document.getElementById('footer').textContent = u.active_users.length? 'Active users: '+u.active_users.join(', ') : '';
+  }catch(e){
+    failCount++;
+    document.getElementById('meta').textContent = 'reconnecting…';
+    // After a couple of failures, re-read endpoint.json in case the tunnel URL rotated
+    if(failCount>=2){ try{ await resolveApi(); }catch(_){} }
+    if(failCount>=3){ showBanner('Live data source is unreachable. The cluster server or its tunnel may be down — retrying automatically.'); }
+  }
+}
+load(); setInterval(load, REFRESH_MS);
+</script>
+</body>
+</html>

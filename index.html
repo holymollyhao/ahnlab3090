@@ -61,7 +61,17 @@
   .banner{display:none;margin:14px 24px 0;padding:11px 15px;border-radius:11px;
     background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);color:#ffd0d0;font-size:13px}
   footer{color:var(--muted);font-size:11px;text-align:center;padding:0 0 30px}
-  @media(max-width:520px){.bars{grid-template-columns:1fr}}
+  .storage-wrap{padding:0 24px 40px}
+  .storage-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+  .storage-card h2{margin:0;padding:13px 16px;font-size:15px;display:flex;align-items:center;gap:9px;
+    border-bottom:1px solid var(--line);background:var(--panel2)}
+  .storage-card h2 .cnt{margin-left:auto;color:var(--muted);font-size:12px;font-weight:500}
+  .ulist{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:1px 22px;padding:10px 16px 14px}
+  .urow{display:grid;grid-template-columns:20px 104px 1fr 74px;align-items:center;gap:10px;padding:5px 0}
+  .urow .rank{color:var(--muted);font-size:11px;text-align:right;font-variant-numeric:tabular-nums}
+  .urow .u{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .urow .amt{text-align:right;font-size:12px;color:var(--txt);font-variant-numeric:tabular-nums}
+  @media(max-width:520px){.bars{grid-template-columns:1fr}.urow{grid-template-columns:20px 84px 1fr 64px}}
 </style>
 </head>
 <body>
@@ -74,6 +84,7 @@
 <div class="banner" id="banner"></div>
 <div class="chips" id="chips"></div>
 <div class="grid" id="grid"></div>
+<div class="storage-wrap" id="storage"></div>
 <footer id="footer"></footer>
 <script>
 const REFRESH_MS = 5000;
@@ -159,7 +170,45 @@ async function load(){
     if(failCount>=3){ showBanner('Live data source is unreachable. The cluster server or its tunnel may be down — retrying automatically.'); }
   }
 }
-load(); setInterval(load, REFRESH_MS);
+function fmtBytes(b){
+  if(b>=1024**4) return (b/1024**4).toFixed(2)+' TB';
+  if(b>=1024**3) return (b/1024**3).toFixed(1)+' GB';
+  if(b>=1024**2) return (b/1024**2).toFixed(0)+' MB';
+  return (b/1024).toFixed(0)+' KB';
+}
+function sizeColor(b){
+  const tb=b/1024**4;
+  if(tb>=2) return 'var(--red)';
+  if(tb>=1) return 'var(--amber)';
+  if(tb>=0.25) return 'var(--violet)';
+  return 'var(--accent)';
+}
+async function loadStorage(){
+  if(!API) return;
+  try{
+    const r = await fetch(API+'/api/storage',{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const d = await r.json();
+    const users = (d.users||[]).filter(u=>u.bytes>0);
+    const el = document.getElementById('storage');
+    if(!users.length){ el.innerHTML=''; return; }
+    const max = users[0].bytes;
+    const rows = users.map((u,i)=>`<div class="urow">
+      <span class="rank">${i+1}</span>
+      <span class="u">${u.user}</span>
+      <div class="track"><div class="fill" style="width:${(u.bytes/max*100).toFixed(1)}%;background:${sizeColor(u.bytes)}"></div></div>
+      <span class="amt">${fmtBytes(u.bytes)}</span></div>`).join('');
+    const cov = (d.nodes_total!=null)? `${d.nodes_online}/${d.nodes_total} nodes · ` : '';
+    const when = d.generated? new Date(d.generated).toLocaleTimeString() : '';
+    el.innerHTML =
+      `<div class="storage-card"><h2>💾 Storage by user — /home (cluster-wide)
+        <span class="cnt">${cov}${fmtBytes(d.total_bytes||0)} total · ${users.length} users · ${when}</span></h2>
+        <div class="ulist">${rows}</div></div>`;
+  }catch(e){ /* keep last good render */ }
+}
+load().then(loadStorage);
+setInterval(load, REFRESH_MS);
+setInterval(loadStorage, 30000);
 </script>
 </body>
 </html>

@@ -61,17 +61,17 @@
   .banner{display:none;margin:14px 24px 0;padding:11px 15px;border-radius:11px;
     background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.4);color:#ffd0d0;font-size:13px}
   footer{color:var(--muted);font-size:11px;text-align:center;padding:0 0 30px}
-  .storage-wrap{padding:0 24px 40px}
-  .storage-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
-  .storage-card h2{margin:0;padding:13px 16px;font-size:15px;display:flex;align-items:center;gap:9px;
-    border-bottom:1px solid var(--line);background:var(--panel2)}
-  .storage-card h2 .cnt{margin-left:auto;color:var(--muted);font-size:12px;font-weight:500}
-  .ulist{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:1px 22px;padding:10px 16px 14px}
-  .urow{display:grid;grid-template-columns:20px 104px 1fr 74px;align-items:center;gap:10px;padding:5px 0}
-  .urow .rank{color:var(--muted);font-size:11px;text-align:right;font-variant-numeric:tabular-nums}
-  .urow .u{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .urow .amt{text-align:right;font-size:12px;color:var(--txt);font-variant-numeric:tabular-nums}
-  @media(max-width:520px){.bars{grid-template-columns:1fr}.urow{grid-template-columns:20px 84px 1fr 64px}}
+  .disk{padding:11px 16px 13px;border-top:1px solid var(--line);margin-top:auto}
+  .disk .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:6px}
+  .disk .lbl b{color:var(--txt);font-variant-numeric:tabular-nums}
+  .dbar{display:flex;height:15px;border-radius:7px;overflow:hidden;background:#0c1322;border:1px solid var(--line)}
+  .dbar .seg{height:100%;transition:filter .15s}
+  .dbar .seg:hover{filter:brightness(1.25)}
+  .legend{display:flex;flex-wrap:wrap;gap:5px 13px;margin-top:8px}
+  .legend .lg{font-size:10px;color:var(--muted);display:flex;align-items:center;gap:5px}
+  .legend .lg i{width:9px;height:9px;border-radius:2px;display:inline-block;flex-shrink:0}
+  .disk .none{font-size:11px;color:var(--muted);font-style:italic}
+  @media(max-width:520px){.bars{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -84,12 +84,13 @@
 <div class="banner" id="banner"></div>
 <div class="chips" id="chips"></div>
 <div class="grid" id="grid"></div>
-<div class="storage-wrap" id="storage"></div>
 <footer id="footer"></footer>
 <script>
 const REFRESH_MS = 5000;
 let API = null;           // discovered from endpoint.json
 let failCount = 0;
+let lastStats = null;     // last /api/stats payload, re-rendered when storage arrives
+const STORAGE = {};       // node name -> per-node storage detail from /api/storage
 
 function uColor(p){ if(p>=85)return'var(--red)'; if(p>=50)return'var(--amber)'; if(p>=10)return'var(--green)'; return'#3a4a6a'; }
 function col(p){ return uColor(p); }
@@ -129,7 +130,8 @@ function card(s){
   const gpus = s.gpus||[];
   return `<div class="card"><h2><span class="sdot"></span>${s.name}
     <span class="host">${s.hostname||''}</span><span class="cnt">${gpus.length} GPU${gpus.length!=1?'s':''}</span></h2>
-    ${gpus.map(gpuRow).join('')||'<div class="err">No GPUs reported</div>'}</div>`;
+    ${gpus.map(gpuRow).join('')||'<div class="err">No GPUs reported</div>'}
+    ${storageBar(STORAGE[s.name])}</div>`;
 }
 function chip(k,v){return `<div class="chip"><div class="k">${k}</div><div class="v">${v}</div></div>`;}
 function showBanner(msg){ const b=document.getElementById('banner'); b.style.display='block'; b.textContent=msg; }
@@ -157,8 +159,8 @@ async function load(){
       chip('VRAM allocated', `${u.mem_used_gb}<small>/${u.mem_total_gb} GB</small>`)+
       chip('Power draw', `${u.power_kw}<small> kW</small>`)+
       chip('Active users', `${u.active_users.length}`);
-    const servers = d.servers.slice().sort((a,b)=> (b.online-a.online) || a.name.localeCompare(b.name));
-    document.getElementById('grid').innerHTML = servers.map(card).join('');
+    lastStats = d;
+    renderGrid();
     const t = new Date(d.generated).toLocaleTimeString();
     document.getElementById('meta').textContent = 'updated '+t+' · auto-refresh '+(REFRESH_MS/1000)+'s';
     document.getElementById('footer').textContent = u.active_users.length? 'Active users: '+u.active_users.join(', ') : '';
@@ -176,12 +178,38 @@ function fmtBytes(b){
   if(b>=1024**2) return (b/1024**2).toFixed(0)+' MB';
   return (b/1024).toFixed(0)+' KB';
 }
-function sizeColor(b){
-  const tb=b/1024**4;
-  if(tb>=2) return 'var(--red)';
-  if(tb>=1) return 'var(--amber)';
-  if(tb>=0.25) return 'var(--violet)';
-  return 'var(--accent)';
+// deterministic, evenly-spread color per username (stable across servers)
+function userColor(u){
+  let h=0; for(let i=0;i<u.length;i++) h=(h*31 + u.charCodeAt(i))>>>0;
+  return `hsl(${h%360} 62% 56%)`;
+}
+// stacked "% full" disk bar for one server's /home, segmented by user
+function storageBar(st){
+  if(!st || !st.online) return '';
+  const total = st.fs_total||0;
+  if(!total) return '<div class="disk"><span class="none">storage: scanning…</span></div>';
+  const used = st.fs_used||0;
+  const users = (st.users||[]).filter(u=>u.bytes>0).slice().sort((a,b)=>b.bytes-a.bytes);
+  const userSum = users.reduce((a,u)=>a+u.bytes,0);
+  const other = Math.max(0, used-userSum);
+  const pct = used/total*100;
+  let segs = users.map(u=>
+    `<div class="seg" title="${u.user}: ${fmtBytes(u.bytes)}" style="width:${(u.bytes/total*100).toFixed(2)}%;background:${userColor(u.user)}"></div>`).join('');
+  if(other > total*0.002) segs +=
+    `<div class="seg" title="other / system: ${fmtBytes(other)}" style="width:${(other/total*100).toFixed(2)}%;background:#3a4a6a"></div>`;
+  const legend = users.slice(0,6).map(u=>
+    `<span class="lg"><i style="background:${userColor(u.user)}"></i>${u.user} ${fmtBytes(u.bytes)}</span>`).join('')
+    + (users.length>6 ? `<span class="lg">+${users.length-6} more</span>` : '');
+  return `<div class="disk">
+    <div class="lbl"><span>Disk</span><b>${pct.toFixed(0)}% full · ${fmtBytes(used)} / ${fmtBytes(total)}</b></div>
+    <div class="dbar">${segs}</div>
+    <div class="legend">${legend}</div>
+  </div>`;
+}
+function renderGrid(){
+  if(!lastStats) return;
+  const servers = lastStats.servers.slice().sort((a,b)=> (b.online-a.online) || a.name.localeCompare(b.name));
+  document.getElementById('grid').innerHTML = servers.map(card).join('');
 }
 async function loadStorage(){
   if(!API) return;
@@ -189,21 +217,8 @@ async function loadStorage(){
     const r = await fetch(API+'/api/storage',{cache:'no-store'});
     if(!r.ok) throw new Error('HTTP '+r.status);
     const d = await r.json();
-    const users = (d.users||[]).filter(u=>u.bytes>0);
-    const el = document.getElementById('storage');
-    if(!users.length){ el.innerHTML=''; return; }
-    const max = users[0].bytes;
-    const rows = users.map((u,i)=>`<div class="urow">
-      <span class="rank">${i+1}</span>
-      <span class="u">${u.user}</span>
-      <div class="track"><div class="fill" style="width:${(u.bytes/max*100).toFixed(1)}%;background:${sizeColor(u.bytes)}"></div></div>
-      <span class="amt">${fmtBytes(u.bytes)}</span></div>`).join('');
-    const cov = (d.nodes_total!=null)? `${d.nodes_online}/${d.nodes_total} nodes · ` : '';
-    const when = d.generated? new Date(d.generated).toLocaleTimeString() : '';
-    el.innerHTML =
-      `<div class="storage-card"><h2>💾 Storage by user — /home (cluster-wide)
-        <span class="cnt">${cov}${fmtBytes(d.total_bytes||0)} total · ${users.length} users · ${when}</span></h2>
-        <div class="ulist">${rows}</div></div>`;
+    (d.nodes||[]).forEach(n=>{ STORAGE[n.node]=n; });
+    renderGrid();
   }catch(e){ /* keep last good render */ }
 }
 load().then(loadStorage);

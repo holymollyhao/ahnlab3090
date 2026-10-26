@@ -65,12 +65,26 @@
   .disk .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:6px}
   .disk .lbl b{color:var(--txt);font-variant-numeric:tabular-nums}
   .dbar{display:flex;height:15px;border-radius:7px;overflow:hidden;background:#0c1322;border:1px solid var(--line)}
-  .dbar .seg{height:100%;transition:filter .15s}
-  .dbar .seg:hover{filter:brightness(1.25)}
+  .dbar .seg{height:100%;transition:filter .15s,transform .15s,box-shadow .15s;transform-origin:center}
+  .dbar .seg.clk{cursor:pointer}
+  .dbar:hover .seg{filter:brightness(.6)}
+  .dbar .seg.clk:hover{filter:brightness(1.4);transform:scaleY(1.45);box-shadow:0 0 0 1px rgba(255,255,255,.75) inset;border-radius:2px;position:relative;z-index:2}
   .legend{display:flex;flex-wrap:wrap;gap:5px 13px;margin-top:8px}
-  .legend .lg{font-size:10px;color:var(--muted);display:flex;align-items:center;gap:5px}
-  .legend .lg i{width:9px;height:9px;border-radius:2px;display:inline-block;flex-shrink:0}
+  .legend .lg{font-size:10px;color:var(--muted);display:flex;align-items:center;gap:5px;border-radius:5px;padding:2px 5px;margin:-2px -5px;transition:background .15s,color .15s,transform .15s}
+  .legend .lg i{width:9px;height:9px;border-radius:2px;display:inline-block;flex-shrink:0;transition:transform .15s}
+  .legend .lg.clk{cursor:pointer}
+  .legend .lg.clk:hover{background:var(--panel2);color:var(--txt);transform:translateY(-1px)}
+  .legend .lg.clk:hover i{transform:scale(1.25)}
+  .legend .lg.clk::after{content:"✉";margin-left:2px;opacity:0;font-size:10px;transition:opacity .15s}
+  .legend .lg.clk:hover::after{opacity:.9}
+  .legend .lg.no{opacity:.5}
   .disk .none{font-size:11px;color:var(--muted);font-style:italic}
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);
+    background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:11px 18px;
+    border-radius:11px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;
+    transition:opacity .25s,transform .25s;z-index:50;max-width:90vw}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast.ok{border-color:var(--green)} #toast.err{border-color:var(--red)}
   @media(max-width:520px){.bars{grid-template-columns:1fr}}
 </style>
 </head>
@@ -85,6 +99,7 @@
 <div class="chips" id="chips"></div>
 <div class="grid" id="grid"></div>
 <footer id="footer"></footer>
+<div id="toast"></div>
 <script>
 const REFRESH_MS = 5000;
 let API = null;           // discovered from endpoint.json
@@ -193,13 +208,15 @@ function storageBar(st){
   const userSum = users.reduce((a,u)=>a+u.bytes,0);
   const other = Math.max(0, used-userSum);
   const pct = used/total*100;
+  const attrs = u => `data-user="${u.user}" data-node="${st.node}" data-gb="${(u.bytes/1024**3).toFixed(0)}" `
+    + `data-pct="${Math.round(pct)}" data-name="${(u.name||'').replace(/"/g,'')}" data-notify="${u.notify?1:0}"`;
   let segs = users.map(u=>
-    `<div class="seg" title="${u.user}: ${fmtBytes(u.bytes)}" style="width:${(u.bytes/total*100).toFixed(2)}%;background:${userColor(u.user)}"></div>`).join('');
+    `<div class="seg ${u.notify?'clk':''}" ${attrs(u)} title="${u.user}${u.name?' ('+u.name+')':''}: ${fmtBytes(u.bytes)}${u.notify?' — click to notify':''}" style="width:${(u.bytes/total*100).toFixed(2)}%;background:${userColor(u.user)}"></div>`).join('');
   if(other > total*0.002) segs +=
     `<div class="seg" title="other / system: ${fmtBytes(other)}" style="width:${(other/total*100).toFixed(2)}%;background:#3a4a6a"></div>`;
-  const legend = users.slice(0,6).map(u=>
-    `<span class="lg"><i style="background:${userColor(u.user)}"></i>${u.user} ${fmtBytes(u.bytes)}</span>`).join('')
-    + (users.length>6 ? `<span class="lg">+${users.length-6} more</span>` : '');
+  const legend = users.slice(0,8).map(u=>
+    `<span class="lg ${u.notify?'clk':'no'}" ${attrs(u)} title="${u.notify?'Click to email '+(u.name||u.user):'no email on file for '+u.user}"><i style="background:${userColor(u.user)}"></i>${u.user} ${fmtBytes(u.bytes)}</span>`).join('')
+    + (users.length>8 ? `<span class="lg">+${users.length-8} more</span>` : '');
   return `<div class="disk">
     <div class="lbl"><span>Disk</span><b>${pct.toFixed(0)}% full · ${fmtBytes(used)} / ${fmtBytes(total)}</b></div>
     <div class="dbar">${segs}</div>
@@ -221,6 +238,40 @@ async function loadStorage(){
     renderGrid();
   }catch(e){ /* keep last good render */ }
 }
+// ---- click-to-notify (email a user to clean up their storage) ----
+function toast(msg, kind){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className='show'+(kind?(' '+kind):'');
+  clearTimeout(t._h); t._h=setTimeout(()=>{ t.className=''; }, 4500);
+}
+function adminToken(reset){
+  if(reset){ try{ localStorage.removeItem('notifyToken'); }catch(_){} }
+  let tk=null; try{ tk=localStorage.getItem('notifyToken'); }catch(_){}
+  if(!tk){
+    tk=prompt('Enter the admin passphrase to send cleanup notifications:')||'';
+    if(tk){ try{ localStorage.setItem('notifyToken', tk); }catch(_){} }
+  }
+  return tk;
+}
+async function notify(el){
+  const user=el.getAttribute('data-user'), node=el.getAttribute('data-node');
+  const name=el.getAttribute('data-name')||user;
+  const gb=el.getAttribute('data-gb'), pct=el.getAttribute('data-pct');
+  if(el.getAttribute('data-notify')!=='1'){ toast('No email on file for '+user, 'err'); return; }
+  if(!confirm(`Email ${name} to clean up storage?\n\n${user} is using ~${gb} GB on ${node} (disk ${pct}% full).`)) return;
+  const tk=adminToken(false); if(!tk) return;
+  if(!API){ try{ await resolveApi(); }catch(_){} }
+  try{
+    const r=await fetch(API+'/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token:tk,user,node,gb:Number(gb),pct:Number(pct)})});
+    if(r.status===403){ adminToken(true); toast('Wrong passphrase — try again', 'err'); return; }
+    const d=await r.json();
+    toast((d.ok?'✓ ':'✗ ')+(d.detail||(d.ok?'sent':'failed')), d.ok?'ok':'err');
+  }catch(e){ toast('Could not reach server', 'err'); }
+}
+document.getElementById('grid').addEventListener('click', e=>{
+  const el=e.target.closest('[data-user]'); if(el) notify(el);
+});
 load().then(loadStorage);
 setInterval(load, REFRESH_MS);
 setInterval(loadStorage, 30000);

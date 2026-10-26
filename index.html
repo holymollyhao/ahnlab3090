@@ -244,27 +244,16 @@ function toast(msg, kind){
   t.textContent=msg; t.className='show'+(kind?(' '+kind):'');
   clearTimeout(t._h); t._h=setTimeout(()=>{ t.className=''; }, 4500);
 }
-function adminToken(reset){
-  if(reset){ try{ localStorage.removeItem('notifyToken'); }catch(_){} }
-  let tk=null; try{ tk=localStorage.getItem('notifyToken'); }catch(_){}
-  if(!tk){
-    tk=prompt('Enter the admin passphrase to send cleanup notifications:')||'';
-    if(tk){ try{ localStorage.setItem('notifyToken', tk); }catch(_){} }
-  }
-  return tk;
-}
 async function notify(el){
   const user=el.getAttribute('data-user'), node=el.getAttribute('data-node');
   const name=el.getAttribute('data-name')||user;
   const gb=el.getAttribute('data-gb'), pct=el.getAttribute('data-pct');
   if(el.getAttribute('data-notify')!=='1'){ toast('No email on file for '+user, 'err'); return; }
   if(!confirm(`Email ${name} to clean up storage?\n\n${user} is using ~${gb} GB on ${node} (disk ${pct}% full).`)) return;
-  const tk=adminToken(false); if(!tk) return;
   if(!API){ try{ await resolveApi(); }catch(_){} }
   try{
     const r=await fetch(API+'/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({token:tk,user,node,gb:Number(gb),pct:Number(pct)})});
-    if(r.status===403){ adminToken(true); toast('Wrong passphrase — try again', 'err'); return; }
+      body:JSON.stringify({user,node,gb:Number(gb),pct:Number(pct)})});
     const d=await r.json();
     toast((d.ok?'✓ ':'✗ ')+(d.detail||(d.ok?'sent':'failed')), d.ok?'ok':'err');
   }catch(e){ toast('Could not reach server', 'err'); }
